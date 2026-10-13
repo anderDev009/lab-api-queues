@@ -2,6 +2,60 @@
 
 Learning lab comparing synchronous vs queued request processing in Go.
 
+## Why this project exists
+
+This project tests one architectural decision: **should writes be processed inside the HTTP request, or handed off to a queue and processed by workers?**
+
+Both versions implement the same use cases on the same stack (Go, Postgres, RabbitMQ). Only the way writes reach the database differs. That makes it possible to put both under high load and observe the tradeoffs, from a software architect's and a DevOps engineer's point of view, instead of reasoning about them in the abstract.
+
+> The tradeoffs below are the **hypotheses** this lab is meant to confirm or refute with measurements. They are not results.
+
+### The two architectures
+
+```
+api-sync:   client ──HTTP──► API ──INSERT──► Postgres ──► 201 (data is stored)
+
+api-async:  client ──HTTP──► API ──publish──► RabbitMQ ──► 202 (data is NOT stored yet)
+                                                  │
+                                                  ▼
+                                    worker × N ──INSERT──► Postgres
+```
+
+### Tradeoffs: software architecture view
+
+| Concern | Sync | Async (queue + workers) |
+|---------|------|-------------------------|
+| Consistency | Strong: when the client gets `201`, the row exists | Eventual: `202` only means "accepted"; a read right after may not see the change |
+| Response contract | Simple: success or a definitive error (`404`, `400`) | Weaker: errors found by the worker (e.g. `404` on update) never reach the client |
+| Coupling | API availability depends on Postgres availability | API depends on the broker; Postgres can be slow or down without rejecting writes |
+| Complexity | One process, one code path | Broker, message contract, versioning (`type` field), retries, poison messages, idempotency |
+| Ordering | Requests are applied in the order they finish | Concurrent workers can apply jobs out of order (e.g. `update` before its `create`) |
+| Debugging | One request = one log line and one trace | One request spans API → broker → worker; needs a correlation id (`request_id`) |
+
+### Tradeoffs: DevOps / operations view
+
+| Concern | Sync | Async (queue + workers) |
+|---------|------|-------------------------|
+| Behavior under a traffic spike | Latency grows with DB contention; when the connection pool is exhausted, requests time out or fail | API latency stays low and flat; the spike becomes queue depth (backlog) that workers drain over time |
+| Bottleneck | Postgres connections and write throughput, hit directly by every request | Moves to the broker; Postgres load is capped by `workers × WORKER_CONCURRENCY` |
+| Scaling | Scale API replicas, but every replica adds DB connections (more pressure on the DB) | Scale API and workers independently (`--scale worker=N`); write pressure is a dial you control |
+| Failure mode | Errors visible immediately to clients (`500`, timeouts) | Silent degradation: the API stays green while the backlog grows; needs alerting on queue depth and consumer lag |
+| Data safety on crash | Request fails, the client can retry | Durable queue + persistent messages + manual ack: in-flight jobs are redelivered (at-least-once, so duplicates are possible) |
+| Key metrics | p50/p95/p99 latency, error rate, DB pool saturation | API latency, queue depth, publish vs ack rate, end-to-end time to persistence, redeliveries |
+| Infrastructure cost | Fewer moving parts | One more stateful component (RabbitMQ) to run, monitor, back up and upgrade |
+
+### When each one wins
+
+- **Choose sync** when the client needs the result immediately, the load is predictable, or strong consistency is a business requirement (payments, inventory checks).
+- **Choose async** when traffic is bursty, the write is slow or can fail transiently, the client can accept "accepted, processing", or you need to protect the database from spikes.
+
+### Suggested experiment
+
+1. Start the stack and fire the same write load at both APIs (any HTTP load tool, e.g. `k6`, `hey` or `vegeta`).
+2. Increase concurrency step by step until `api-sync` starts degrading.
+3. Compare: client latency percentiles and error rate, RabbitMQ queue depth (management UI at http://localhost:15672), and the time until rows actually appear in Postgres.
+4. Repeat with `--scale worker=1`, `3` and `5`, and with Postgres stopped for a few seconds, to see how each version fails and recovers.
+
 | App | Role | Port |
 |-----|------|------|
 | `api-sync` | Full CRUD directly against Postgres | 8081 |
