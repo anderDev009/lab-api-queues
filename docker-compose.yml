@@ -1,0 +1,87 @@
+x-db-env: &db-env
+  DB_HOST: postgres
+  DB_PORT: "5432"
+  DB_USER: postgres
+  DB_PASSWORD: postgres
+  DB_NAME: reservations
+
+x-mq-env: &mq-env
+  RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+  QUEUE_NAME: reservations
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: reservations
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d reservations"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  rabbitmq:
+    image: rabbitmq:4-management-alpine
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  api-sync:
+    build:
+      context: ./app
+      args:
+        APP: api-sync
+    environment:
+      <<: *db-env
+      HTTP_PORT: "8080"
+    ports:
+      - "8081:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  api-async:
+    build:
+      context: ./app
+      args:
+        APP: api-async
+    environment:
+      <<: *mq-env
+      HTTP_PORT: "8080"
+    ports:
+      - "8082:8080"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: ./app
+      args:
+        APP: worker
+    environment:
+      <<: [*db-env, *mq-env]
+      WORKER_CONCURRENCY: "10"
+      WORKER_PREFETCH: "20"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  pgdata:
