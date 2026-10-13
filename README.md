@@ -162,7 +162,7 @@ docker build --build-arg APP=worker -t reservations-worker app/
 
 ## Pendiente
 
-- **Manifiestos de orquestación** (p. ej. Kubernetes: Deployments, Services, ConfigMaps/Secrets, escalado del worker). Todavía no están incluidos: los agregará el autor como parte de su estudio de orquestación. Por ahora el stack solo se ejecuta con Docker Compose.
+- **Manifiestos de orquestación** (p. ej. Kubernetes: Deployments, Services, ConfigMaps/Secrets, escalado del worker). Todavía no están incluidos. Por ahora el stack solo se ejecuta con Docker Compose.
 
 ## Tests
 
