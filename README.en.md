@@ -58,6 +58,8 @@ api-async:  client ──HTTP──► API ──publish──► RabbitMQ ─�
 3. Compare: client latency percentiles and error rate, RabbitMQ queue depth (management UI at http://localhost:15672), and the time until rows actually appear in Postgres.
 4. Repeat with `--scale worker=1`, `3` and `5`, and with Postgres stopped for a few seconds, to see how each version fails and recovers.
 
+## Components
+
 | App | Role | Port |
 |-----|------|------|
 | `api-sync` | Full CRUD directly against Postgres | 8081 |
