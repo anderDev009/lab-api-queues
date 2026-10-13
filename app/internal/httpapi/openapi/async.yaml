@@ -1,0 +1,222 @@
+openapi: 3.0.3
+info:
+  title: Reservations Async API
+  version: 1.1.0
+  description: >-
+    Reads (GET) are served synchronously from Postgres. Writes (POST, PUT,
+    DELETE) are validated and published as typed jobs to RabbitMQ; a worker
+    consumes the queue and applies them, so the change is not visible yet
+    when this API responds. A queued update or delete of a missing id is
+    dropped by the worker.
+paths:
+  /reservations:
+    get:
+      summary: List reservations
+      operationId: listReservations
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: One page of reservations ordered by id
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReservationList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    post:
+      summary: Enqueue a reservation
+      operationId: enqueueReservation
+      requestBody:
+        $ref: "#/components/requestBodies/ReservationInput"
+      responses:
+        "202":
+          $ref: "#/components/responses/Queued"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /reservations/{id}:
+    parameters:
+      - $ref: "#/components/parameters/ID"
+    get:
+      summary: Get a reservation
+      operationId: getReservation
+      responses:
+        "200":
+          description: The reservation
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Reservation"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    put:
+      summary: Enqueue a full replace of a reservation's email and name
+      description: The id is not checked for existence before queuing.
+      operationId: enqueueUpdateReservation
+      requestBody:
+        $ref: "#/components/requestBodies/ReservationInput"
+      responses:
+        "202":
+          $ref: "#/components/responses/Queued"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    delete:
+      summary: Enqueue deletion of a reservation
+      description: The id is not checked for existence before queuing.
+      operationId: enqueueDeleteReservation
+      responses:
+        "202":
+          $ref: "#/components/responses/Queued"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /health:
+    get:
+      summary: Liveness check
+      operationId: health
+      responses:
+        "200":
+          $ref: "#/components/responses/Health"
+components:
+  parameters:
+    ID:
+      name: id
+      in: path
+      required: true
+      description: Reservation id (positive integer)
+      schema:
+        type: integer
+        minimum: 1
+    Limit:
+      name: limit
+      in: query
+      description: Page size
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+    Offset:
+      name: offset
+      in: query
+      description: Number of reservations to skip
+      schema:
+        type: integer
+        minimum: 0
+        default: 0
+  requestBodies:
+    ReservationInput:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ReservationInput"
+  schemas:
+    ReservationInput:
+      type: object
+      required: [email, name]
+      properties:
+        email:
+          type: string
+          format: email
+          example: jane@example.com
+        name:
+          type: string
+          example: Jane Doe
+    Reservation:
+      type: object
+      properties:
+        id:
+          type: integer
+          example: 1
+        email:
+          type: string
+          format: email
+          example: jane@example.com
+        name:
+          type: string
+          example: Jane Doe
+        created_at:
+          type: string
+          format: date-time
+    ReservationList:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Reservation"
+        limit:
+          type: integer
+          example: 20
+        offset:
+          type: integer
+          example: 0
+    QueuedResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: queued
+        request_id:
+          type: string
+          description: Random 128-bit hex identifier of the queued job
+          example: 3f2b8c1d9e4a7f6b0c5d2e8a1b4f7c9d
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+  responses:
+    Queued:
+      description: Request accepted and queued for the worker
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/QueuedResponse"
+    BadRequest:
+      description: Invalid JSON body, id, paging params or validation error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: "validation error: email is invalid"
+    NotFound:
+      description: Reservation does not exist (or was deleted)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: reservation not found
+    InternalError:
+      description: Database read or broker publish failed
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: internal error
+    Health:
+      description: Service is up
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              status:
+                type: string
+                example: ok
