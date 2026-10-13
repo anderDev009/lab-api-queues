@@ -1,0 +1,95 @@
+openapi: 3.0.3
+info:
+  title: Reservations Sync API
+  version: 1.0.0
+  description: Persists the reservation in Postgres within the HTTP request.
+paths:
+  /reservations:
+    post:
+      summary: Create a reservation synchronously
+      operationId: createReservation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateReservationInput"
+      responses:
+        "201":
+          description: Reservation created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Reservation"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /health:
+    get:
+      summary: Liveness check
+      operationId: health
+      responses:
+        "200":
+          $ref: "#/components/responses/Health"
+components:
+  schemas:
+    CreateReservationInput:
+      type: object
+      required: [email, name]
+      properties:
+        email:
+          type: string
+          format: email
+          example: jane@example.com
+        name:
+          type: string
+          example: Jane Doe
+    Reservation:
+      type: object
+      properties:
+        id:
+          type: integer
+          example: 1
+        email:
+          type: string
+          format: email
+          example: jane@example.com
+        name:
+          type: string
+          example: Jane Doe
+        created_at:
+          type: string
+          format: date-time
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+  responses:
+    BadRequest:
+      description: Invalid JSON body or validation error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: "validation error: email is invalid"
+    InternalError:
+      description: Unexpected server error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: internal error
+    Health:
+      description: Service is up
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              status:
+                type: string
+                example: ok

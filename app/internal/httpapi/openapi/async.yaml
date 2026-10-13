@@ -1,0 +1,92 @@
+openapi: 3.0.3
+info:
+  title: Reservations Async API
+  version: 1.0.0
+  description: >-
+    Validates the reservation and publishes a job to RabbitMQ. A worker
+    consumes the queue and persists it in Postgres, so the reservation does
+    not exist yet when this API responds.
+paths:
+  /reservations:
+    post:
+      summary: Enqueue a reservation
+      operationId: enqueueReservation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateReservationInput"
+      responses:
+        "202":
+          description: Reservation accepted and queued for processing
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QueuedResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /health:
+    get:
+      summary: Liveness check
+      operationId: health
+      responses:
+        "200":
+          $ref: "#/components/responses/Health"
+components:
+  schemas:
+    CreateReservationInput:
+      type: object
+      required: [email, name]
+      properties:
+        email:
+          type: string
+          format: email
+          example: jane@example.com
+        name:
+          type: string
+          example: Jane Doe
+    QueuedResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: queued
+        request_id:
+          type: string
+          description: Random 128-bit hex identifier of the queued job
+          example: 3f2b8c1d9e4a7f6b0c5d2e8a1b4f7c9d
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+  responses:
+    BadRequest:
+      description: Invalid JSON body or validation error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: "validation error: email is invalid"
+    InternalError:
+      description: Failed to publish the job to the broker
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error: internal error
+    Health:
+      description: Service is up
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              status:
+                type: string
+                example: ok

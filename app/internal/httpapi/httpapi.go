@@ -31,6 +31,7 @@ func newRouter() *gin.Engine {
 // NewSyncRouter persists the reservation within the request.
 func NewSyncRouter(svc Creator) *gin.Engine {
 	r := newRouter()
+	registerDocs(r, syncSpec)
 	r.POST("/reservations", func(c *gin.Context) {
 		var in reservation.CreateReservationInput
 		if err := c.ShouldBindJSON(&in); err != nil {
@@ -50,6 +51,7 @@ func NewSyncRouter(svc Creator) *gin.Engine {
 // NewAsyncRouter validates the request and enqueues it for the worker.
 func NewAsyncRouter(pub reservation.Publisher) *gin.Engine {
 	r := newRouter()
+	registerDocs(r, asyncSpec)
 	r.POST("/reservations", func(c *gin.Context) {
 		var in reservation.CreateReservationInput
 		if err := c.ShouldBindJSON(&in); err != nil {

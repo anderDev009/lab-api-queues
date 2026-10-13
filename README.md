@@ -43,6 +43,15 @@ curl localhost:8081/health
 
 Invalid input (missing/invalid `email`, missing `name`) returns `400`.
 
+## API docs
+
+Each HTTP API serves Swagger UI and its OpenAPI 3 spec (specs live in `app/internal/httpapi/openapi/`):
+
+- Sync: http://localhost:8081/swagger (spec: `/openapi.yaml`)
+- Async: http://localhost:8082/swagger (spec: `/openapi.yaml`)
+
+Swagger UI assets load from the unpkg CDN, so the browser needs internet access.
+
 ## Build one app
 
 ```sh
