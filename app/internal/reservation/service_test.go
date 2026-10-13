@@ -9,8 +9,11 @@ import (
 )
 
 type fakeRepo struct {
-	saved []reservation.Reservation
-	err   error
+	saved     []reservation.Reservation
+	deleted   map[uint]bool
+	err       error
+	gotLimit  int
+	gotOffset int
 }
 
 func (f *fakeRepo) Create(_ context.Context, r *reservation.Reservation) error {
@@ -20,6 +23,71 @@ func (f *fakeRepo) Create(_ context.Context, r *reservation.Reservation) error {
 	r.ID = uint(len(f.saved) + 1)
 	f.saved = append(f.saved, *r)
 	return nil
+}
+
+func (f *fakeRepo) find(id uint) (int, error) {
+	if f.err != nil {
+		return 0, f.err
+	}
+	if id == 0 || int(id) > len(f.saved) || f.deleted[id] {
+		return 0, reservation.ErrNotFound
+	}
+	return int(id) - 1, nil
+}
+
+func (f *fakeRepo) GetByID(_ context.Context, id uint) (reservation.Reservation, error) {
+	i, err := f.find(id)
+	if err != nil {
+		return reservation.Reservation{}, err
+	}
+	return f.saved[i], nil
+}
+
+func (f *fakeRepo) List(_ context.Context, limit, offset int) ([]reservation.Reservation, error) {
+	f.gotLimit, f.gotOffset = limit, offset
+	if f.err != nil {
+		return nil, f.err
+	}
+	var out []reservation.Reservation
+	for _, r := range f.saved {
+		if !f.deleted[r.ID] {
+			out = append(out, r)
+		}
+	}
+	if offset >= len(out) {
+		return nil, nil
+	}
+	return out[offset:min(offset+limit, len(out))], nil
+}
+
+func (f *fakeRepo) Update(_ context.Context, r *reservation.Reservation) error {
+	i, err := f.find(r.ID)
+	if err != nil {
+		return err
+	}
+	f.saved[i].Email, f.saved[i].Name = r.Email, r.Name
+	*r = f.saved[i]
+	return nil
+}
+
+func (f *fakeRepo) Delete(_ context.Context, id uint) error {
+	if _, err := f.find(id); err != nil {
+		return err
+	}
+	if f.deleted == nil {
+		f.deleted = map[uint]bool{}
+	}
+	f.deleted[id] = true
+	return nil
+}
+
+// seededRepo returns a repo holding reservations 1..n.
+func seededRepo(n int) *fakeRepo {
+	repo := &fakeRepo{}
+	for i := range n {
+		repo.saved = append(repo.saved, reservation.Reservation{ID: uint(i + 1), Email: "ana@example.com", Name: "Ana"})
+	}
+	return repo
 }
 
 func TestValidate(t *testing.T) {
@@ -80,6 +148,144 @@ func TestServiceCreateReservation(t *testing.T) {
 			if tt.wantErr == nil {
 				if got.ID == 0 || got.Email != "ana@example.com" || got.Name != "Ana" {
 					t.Fatalf("unexpected reservation: %+v", got)
+				}
+			}
+		})
+	}
+}
+
+func TestServiceGetReservation(t *testing.T) {
+	dbErr := errors.New("db down")
+	tests := []struct {
+		name    string
+		id      uint
+		repoErr error
+		wantErr error
+	}{
+		{"returns existing reservation", 2, nil, nil},
+		{"rejects zero id", 0, nil, reservation.ErrInvalidID},
+		{"propagates not found", 9, nil, reservation.ErrNotFound},
+		{"propagates repository error", 1, dbErr, dbErr},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := seededRepo(3)
+			repo.err = tt.repoErr
+			got, err := reservation.NewService(repo).GetReservation(context.Background(), tt.id)
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("GetReservation() error = %v, want %v", err, tt.wantErr)
+			}
+			if tt.wantErr == nil && got.ID != tt.id {
+				t.Fatalf("GetReservation() id = %d, want %d", got.ID, tt.id)
+			}
+		})
+	}
+}
+
+func TestServiceListReservations(t *testing.T) {
+	tests := []struct {
+		name      string
+		limit     int
+		offset    int
+		wantErr   error
+		wantItems int
+	}{
+		{"first page", 2, 0, nil, 2},
+		{"last partial page", 2, 2, nil, 1},
+		{"offset past end returns empty list", 20, 10, nil, 0},
+		{"max limit accepted", reservation.MaxListLimit, 0, nil, 3},
+		{"zero limit rejected", 0, 0, reservation.ErrInvalidLimit, 0},
+		{"limit above max rejected", reservation.MaxListLimit + 1, 0, reservation.ErrInvalidLimit, 0},
+		{"negative offset rejected", 10, -1, reservation.ErrInvalidOffset, 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := seededRepo(3)
+			got, err := reservation.NewService(repo).ListReservations(context.Background(), tt.limit, tt.offset)
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("ListReservations() error = %v, want %v", err, tt.wantErr)
+			}
+			if tt.wantErr != nil {
+				if !errors.Is(err, reservation.ErrValidation) {
+					t.Fatalf("error %v does not wrap ErrValidation", err)
+				}
+				return
+			}
+			if got == nil {
+				t.Fatal("ListReservations() returned nil slice, want empty non-nil")
+			}
+			if len(got) != tt.wantItems {
+				t.Fatalf("ListReservations() returned %d items, want %d", len(got), tt.wantItems)
+			}
+			if repo.gotLimit != tt.limit || repo.gotOffset != tt.offset {
+				t.Fatalf("repo got limit=%d offset=%d", repo.gotLimit, repo.gotOffset)
+			}
+		})
+	}
+}
+
+func TestServiceUpdateReservation(t *testing.T) {
+	valid := reservation.CreateReservationInput{Email: " bob@example.com ", Name: " Bob "}
+	tests := []struct {
+		name    string
+		id      uint
+		input   reservation.CreateReservationInput
+		wantErr error
+	}{
+		{"replaces email and name", 1, valid, nil},
+		{"rejects zero id", 0, valid, reservation.ErrInvalidID},
+		{"rejects invalid input", 1, reservation.CreateReservationInput{Email: "bad", Name: "Bob"}, reservation.ErrInvalidEmail},
+		{"rejects missing name", 1, reservation.CreateReservationInput{Email: "bob@example.com"}, reservation.ErrNameRequired},
+		{"propagates not found", 9, valid, reservation.ErrNotFound},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := seededRepo(1)
+			got, err := reservation.NewService(repo).UpdateReservation(context.Background(), tt.id, tt.input)
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("UpdateReservation() error = %v, want %v", err, tt.wantErr)
+			}
+			if tt.wantErr != nil {
+				if repo.saved[0].Email != "ana@example.com" {
+					t.Fatalf("reservation changed on error: %+v", repo.saved[0])
+				}
+				return
+			}
+			if got.ID != 1 || got.Email != "bob@example.com" || got.Name != "Bob" {
+				t.Fatalf("unexpected updated reservation: %+v", got)
+			}
+			if repo.saved[0].Email != "bob@example.com" {
+				t.Fatalf("repository not updated: %+v", repo.saved[0])
+			}
+		})
+	}
+}
+
+func TestServiceDeleteReservation(t *testing.T) {
+	tests := []struct {
+		name    string
+		id      uint
+		wantErr error
+	}{
+		{"deletes existing reservation", 1, nil},
+		{"rejects zero id", 0, reservation.ErrInvalidID},
+		{"propagates not found", 9, reservation.ErrNotFound},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := seededRepo(1)
+			svc := reservation.NewService(repo)
+			err := svc.DeleteReservation(context.Background(), tt.id)
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("DeleteReservation() error = %v, want %v", err, tt.wantErr)
+			}
+			if tt.wantErr == nil {
+				if _, err := svc.GetReservation(context.Background(), tt.id); !errors.Is(err, reservation.ErrNotFound) {
+					t.Fatalf("GetReservation() after delete error = %v, want ErrNotFound", err)
 				}
 			}
 		})

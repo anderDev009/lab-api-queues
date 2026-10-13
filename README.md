@@ -4,11 +4,20 @@ Learning lab comparing synchronous vs queued request processing in Go.
 
 | App | Role | Port |
 |-----|------|------|
-| `api-sync` | `POST /reservations` inserts into Postgres, returns `201` | 8081 |
-| `api-async` | `POST /reservations` validates and publishes to RabbitMQ, returns `202` | 8082 |
-| `worker` | Consumes the queue and inserts into Postgres (scalable) | — |
+| `api-sync` | Full CRUD directly against Postgres | 8081 |
+| `api-async` | Reads from Postgres; validates writes and publishes them to RabbitMQ | 8082 |
+| `worker` | Consumes typed jobs (`create` / `update` / `delete`) and applies them to Postgres (scalable) | — |
 
-All three share the `CreateReservation` use case (`app/internal/reservation`). HTTP and the queue consumer are adapters.
+| Route | api-sync | api-async |
+|-------|----------|-----------|
+| `POST /reservations` | insert → `201` | enqueue `create` → `202` |
+| `GET /reservations?limit=&offset=` | read → `200` | read → `200` (synchronous) |
+| `GET /reservations/:id` | read → `200` / `404` | read → `200` / `404` (synchronous) |
+| `PUT /reservations/:id` | replace email + name → `200` / `404` | enqueue `update` → `202` |
+| `DELETE /reservations/:id` | delete → `204` / `404` | enqueue `delete` → `202` |
+
+All three share the reservation use cases (`app/internal/reservation`). HTTP and the queue consumer are adapters.
+Deletes are soft deletes (`deleted_at`); a deleted id returns `404`.
 
 ## Run
 
@@ -37,11 +46,32 @@ curl -i -X POST localhost:8082/reservations \
   -H 'Content-Type: application/json' \
   -d '{"email":"ana@example.com","name":"Ana"}'
 
+# List (limit defaults to 20, max 100; offset defaults to 0)
+curl -i 'localhost:8081/reservations?limit=10&offset=0'
+curl -i 'localhost:8082/reservations?limit=10&offset=0'
+
+# Get by id
+curl -i localhost:8081/reservations/1
+
+# Replace email and name: sync returns the updated reservation (200)
+curl -i -X PUT localhost:8081/reservations/1 \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"bob@example.com","name":"Bob"}'
+
+# Replace via the queue: 202, applied later by a worker
+curl -i -X PUT localhost:8082/reservations/1 \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"carol@example.com","name":"Carol"}'
+
+# Delete: sync returns 204, async returns 202
+curl -i -X DELETE localhost:8081/reservations/1
+curl -i -X DELETE localhost:8082/reservations/2
+
 # Health
 curl localhost:8081/health
 ```
 
-Invalid input (missing/invalid `email`, missing `name`) returns `400`.
+Invalid input (missing/invalid `email`, missing `name`), a non-positive or non-numeric id, or an invalid `limit`/`offset` returns `400`. A missing id returns `404` on the sync API; on the async API a queued update/delete of a missing id is dropped by the worker (logged, not retried).
 
 ## API docs
 
@@ -63,10 +93,10 @@ docker build --build-arg APP=worker -t reservations-worker app/
 | Variable | Default | Used by |
 |----------|---------|---------|
 | `HTTP_PORT` | `8080` | APIs |
-| `DATABASE_URL` | built from `DB_*` | api-sync, worker |
-| `DB_HOST` / `DB_PORT` | `postgres` / `5432` | api-sync, worker |
-| `DB_USER` / `DB_PASSWORD` | `postgres` / `postgres` | api-sync, worker |
-| `DB_NAME` | `reservations` | api-sync, worker |
+| `DATABASE_URL` | built from `DB_*` | APIs, worker |
+| `DB_HOST` / `DB_PORT` | `postgres` / `5432` | APIs, worker |
+| `DB_USER` / `DB_PASSWORD` | `postgres` / `postgres` | APIs, worker |
+| `DB_NAME` | `reservations` | APIs, worker |
 | `RABBITMQ_URL` | `amqp://guest:guest@rabbitmq:5672/` | api-async, worker |
 | `QUEUE_NAME` | `reservations` | api-async, worker |
 | `WORKER_CONCURRENCY` | `10` | worker (goroutines per instance) |

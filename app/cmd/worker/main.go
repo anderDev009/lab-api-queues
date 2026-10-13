@@ -44,9 +44,9 @@ func main() {
 
 	svc := reservation.NewService(postgres.NewRepository(db))
 	handle := func(ctx context.Context, job reservation.Job) error {
-		res, err := svc.CreateReservation(ctx, job.Input)
+		err := svc.HandleJob(ctx, job)
 		if err == nil {
-			log.Printf("job %s stored as reservation %d", job.RequestID, res.ID)
+			log.Printf("%s job %s processed", job.Kind(), job.RequestID)
 		}
 		return err
 	}

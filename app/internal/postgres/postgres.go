@@ -3,6 +3,7 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -70,5 +71,64 @@ func (r *Repository) Create(ctx context.Context, res *reservation.Reservation) e
 	}
 	res.ID = m.ID
 	res.CreatedAt = m.CreatedAt
+	return nil
+}
+
+func (m reservationModel) toDomain() reservation.Reservation {
+	return reservation.Reservation{ID: m.ID, Email: m.Email, Name: m.Name, CreatedAt: m.CreatedAt}
+}
+
+// GetByID ignores soft-deleted rows, so a deleted reservation is not found.
+func (r *Repository) GetByID(ctx context.Context, id uint) (reservation.Reservation, error) {
+	var m reservationModel
+	err := r.db.WithContext(ctx).First(&m, id).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return reservation.Reservation{}, reservation.ErrNotFound
+	}
+	if err != nil {
+		return reservation.Reservation{}, fmt.Errorf("get reservation: %w", err)
+	}
+	return m.toDomain(), nil
+}
+
+func (r *Repository) List(ctx context.Context, limit, offset int) ([]reservation.Reservation, error) {
+	var models []reservationModel
+	if err := r.db.WithContext(ctx).Order("id").Limit(limit).Offset(offset).Find(&models).Error; err != nil {
+		return nil, fmt.Errorf("list reservations: %w", err)
+	}
+	items := make([]reservation.Reservation, 0, len(models))
+	for _, m := range models {
+		items = append(items, m.toDomain())
+	}
+	return items, nil
+}
+
+func (r *Repository) Update(ctx context.Context, res *reservation.Reservation) error {
+	result := r.db.WithContext(ctx).Model(&reservationModel{}).
+		Where("id = ?", res.ID).
+		Updates(map[string]any{"email": res.Email, "name": res.Name})
+	if result.Error != nil {
+		return fmt.Errorf("update reservation: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return reservation.ErrNotFound
+	}
+	updated, err := r.GetByID(ctx, res.ID)
+	if err != nil {
+		return err
+	}
+	*res = updated
+	return nil
+}
+
+// Delete soft-deletes the row (gorm.Model sets deleted_at).
+func (r *Repository) Delete(ctx context.Context, id uint) error {
+	result := r.db.WithContext(ctx).Delete(&reservationModel{}, id)
+	if result.Error != nil {
+		return fmt.Errorf("delete reservation: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return reservation.ErrNotFound
+	}
 	return nil
 }

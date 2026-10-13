@@ -1,26 +1,13 @@
 package httpapi
 
 import (
-	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
-	"api-memberships/internal/reservation"
-
 	"github.com/gin-gonic/gin"
 )
-
-type nopCreator struct{}
-
-func (nopCreator) CreateReservation(context.Context, reservation.CreateReservationInput) (reservation.Reservation, error) {
-	return reservation.Reservation{}, nil
-}
-
-type nopPublisher struct{}
-
-func (nopPublisher) Publish(context.Context, reservation.Job) error { return nil }
 
 func TestDocsRoutes(t *testing.T) {
 	gin.SetMode(gin.TestMode)
@@ -31,10 +18,10 @@ func TestDocsRoutes(t *testing.T) {
 		path     string
 		contains string
 	}{
-		{"sync spec", NewSyncRouter(nopCreator{}), "/openapi.yaml", "Reservations Sync API"},
-		{"sync ui", NewSyncRouter(nopCreator{}), "/swagger", "swagger-ui"},
-		{"async spec", NewAsyncRouter(nopPublisher{}), "/openapi.yaml", "Reservations Async API"},
-		{"async ui", NewAsyncRouter(nopPublisher{}), "/swagger", "swagger-ui"},
+		{"sync spec", NewSyncRouter(&fakeService{}), "/openapi.yaml", "Reservations Sync API"},
+		{"sync ui", NewSyncRouter(&fakeService{}), "/swagger", "swagger-ui"},
+		{"async spec", NewAsyncRouter(&fakeService{}, &fakePublisher{}), "/openapi.yaml", "Reservations Async API"},
+		{"async ui", NewAsyncRouter(&fakeService{}, &fakePublisher{}), "/swagger", "swagger-ui"},
 	}
 
 	for _, tt := range tests {

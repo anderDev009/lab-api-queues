@@ -110,8 +110,9 @@ func (c *Conn) Consume(ctx context.Context, concurrency, prefetch int, handle Ha
 	return nil
 }
 
-// process acks on success, drops malformed or invalid messages (requeue would
-// loop forever) and requeues transient failures such as database errors.
+// process acks on success, drops malformed or permanently failing messages
+// (requeue would loop forever) and requeues transient failures such as
+// database errors.
 func process(ctx context.Context, d amqp.Delivery, handle Handler) {
 	var job reservation.Job
 	if err := json.Unmarshal(d.Body, &job); err != nil {
@@ -124,11 +125,24 @@ func process(ctx context.Context, d amqp.Delivery, handle Handler) {
 	switch {
 	case err == nil:
 		_ = d.Ack(false)
-	case errors.Is(err, reservation.ErrValidation):
-		log.Printf("drop invalid job %s: %v", job.RequestID, err)
+	case !shouldRequeue(err):
+		log.Printf("drop %s job %s: %v", job.Kind(), job.RequestID, err)
 		_ = d.Nack(false, false)
 	default:
-		log.Printf("requeue job %s: %v", job.RequestID, err)
+		log.Printf("requeue %s job %s: %v", job.Kind(), job.RequestID, err)
 		_ = d.Nack(false, true)
+	}
+}
+
+// shouldRequeue reports whether a failed job may succeed on retry. Invalid
+// input, missing reservations and unknown job types never will.
+func shouldRequeue(err error) bool {
+	switch {
+	case errors.Is(err, reservation.ErrValidation),
+		errors.Is(err, reservation.ErrNotFound),
+		errors.Is(err, reservation.ErrUnknownJobType):
+		return false
+	default:
+		return true
 	}
 }
