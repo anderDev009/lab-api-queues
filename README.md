@@ -1,123 +1,127 @@
 # lab-api-queues
 
-Learning lab comparing synchronous vs queued request processing in Go.
+**Español** | [English](README.en.md)
 
-## Why this project exists
+Laboratorio para comparar el procesamiento síncrono y el procesamiento con colas en Go.
 
-This project tests one architectural decision: **should writes be processed inside the HTTP request, or handed off to a queue and processed by workers?**
+## Por qué existe este proyecto
 
-Both versions implement the same use cases on the same stack (Go, Postgres, RabbitMQ). Only the way writes reach the database differs. That makes it possible to put both under high load and observe the tradeoffs, from a software architect's and a DevOps engineer's point of view, instead of reasoning about them in the abstract.
+Este proyecto pone a prueba una decisión arquitectónica: **¿las escrituras deben procesarse dentro de la petición HTTP, o entregarse a una cola para que las procesen workers?**
 
-> The tradeoffs below are the **hypotheses** this lab is meant to confirm or refute with measurements. They are not results.
+Ambas versiones implementan los mismos casos de uso sobre el mismo stack (Go, Postgres, RabbitMQ). Lo único que cambia es cómo llegan las escrituras a la base de datos. Eso permite someter ambas a alta demanda y observar los tradeoffs desde el punto de vista de un arquitecto de software y de un ingeniero DevOps, en lugar de razonarlos en abstracto.
 
-### The two architectures
+> Los tradeoffs siguientes son las **hipótesis** que este laboratorio busca confirmar o refutar con mediciones. No son resultados.
+
+### Las dos arquitecturas
 
 ```
-api-sync:   client ──HTTP──► API ──INSERT──► Postgres ──► 201 (data is stored)
+api-sync:   cliente ──HTTP──► API ──INSERT──► Postgres ──► 201 (el dato ya está guardado)
 
-api-async:  client ──HTTP──► API ──publish──► RabbitMQ ──► 202 (data is NOT stored yet)
-                                                  │
-                                                  ▼
-                                    worker × N ──INSERT──► Postgres
+api-async:  cliente ──HTTP──► API ──publish──► RabbitMQ ──► 202 (el dato TODAVÍA no está guardado)
+                                                   │
+                                                   ▼
+                                     worker × N ──INSERT──► Postgres
 ```
 
-### Tradeoffs: software architecture view
+### Tradeoffs: visión de arquitectura de software
 
-| Concern | Sync | Async (queue + workers) |
-|---------|------|-------------------------|
-| Consistency | Strong: when the client gets `201`, the row exists | Eventual: `202` only means "accepted"; a read right after may not see the change |
-| Response contract | Simple: success or a definitive error (`404`, `400`) | Weaker: errors found by the worker (e.g. `404` on update) never reach the client |
-| Coupling | API availability depends on Postgres availability | API depends on the broker; Postgres can be slow or down without rejecting writes |
-| Complexity | One process, one code path | Broker, message contract, versioning (`type` field), retries, poison messages, idempotency |
-| Ordering | Requests are applied in the order they finish | Concurrent workers can apply jobs out of order (e.g. `update` before its `create`) |
-| Debugging | One request = one log line and one trace | One request spans API → broker → worker; needs a correlation id (`request_id`) |
+| Aspecto | Síncrona | Asíncrona (cola + workers) |
+|---------|----------|----------------------------|
+| Consistencia | Fuerte: cuando el cliente recibe `201`, la fila existe | Eventual: `202` solo significa "aceptado"; una lectura inmediata puede no ver el cambio |
+| Contrato de respuesta | Simple: éxito o un error definitivo (`404`, `400`) | Más débil: los errores que detecta el worker (p. ej. `404` en un update) nunca llegan al cliente |
+| Acoplamiento | La disponibilidad de la API depende de la de Postgres | La API depende del broker; Postgres puede estar lento o caído sin rechazar escrituras |
+| Complejidad | Un proceso, un solo camino de código | Broker, contrato de mensajes, versionado (campo `type`), reintentos, mensajes envenenados, idempotencia |
+| Orden | Las peticiones se aplican en el orden en que terminan | Workers concurrentes pueden aplicar jobs fuera de orden (p. ej. un `update` antes de su `create`) |
+| Depuración | Una petición = una línea de log y una traza | Una petición atraviesa API → broker → worker; requiere un id de correlación (`request_id`) |
 
-### Tradeoffs: DevOps / operations view
+### Tradeoffs: visión DevOps / operaciones
 
-| Concern | Sync | Async (queue + workers) |
-|---------|------|-------------------------|
-| Behavior under a traffic spike | Latency grows with DB contention; when the connection pool is exhausted, requests time out or fail | API latency stays low and flat; the spike becomes queue depth (backlog) that workers drain over time |
-| Bottleneck | Postgres connections and write throughput, hit directly by every request | Moves to the broker; Postgres load is capped by `workers × WORKER_CONCURRENCY` |
-| Scaling | Scale API replicas, but every replica adds DB connections (more pressure on the DB) | Scale API and workers independently (`--scale worker=N`); write pressure is a dial you control |
-| Failure mode | Errors visible immediately to clients (`500`, timeouts) | Silent degradation: the API stays green while the backlog grows; needs alerting on queue depth and consumer lag |
-| Data safety on crash | Request fails, the client can retry | Durable queue + persistent messages + manual ack: in-flight jobs are redelivered (at-least-once, so duplicates are possible) |
-| Key metrics | p50/p95/p99 latency, error rate, DB pool saturation | API latency, queue depth, publish vs ack rate, end-to-end time to persistence, redeliveries |
-| Infrastructure cost | Fewer moving parts | One more stateful component (RabbitMQ) to run, monitor, back up and upgrade |
+| Aspecto | Síncrona | Asíncrona (cola + workers) |
+|---------|----------|----------------------------|
+| Comportamiento ante un pico de tráfico | La latencia crece con la contención en la BD; al agotarse el pool de conexiones, las peticiones expiran o fallan | La latencia de la API se mantiene baja y estable; el pico se convierte en profundidad de cola (backlog) que los workers drenan con el tiempo |
+| Cuello de botella | Conexiones y capacidad de escritura de Postgres, golpeadas directamente por cada petición | Se traslada al broker; la carga sobre Postgres queda limitada por `workers × WORKER_CONCURRENCY` |
+| Escalado | Se escalan réplicas de la API, pero cada réplica suma conexiones a la BD (más presión) | API y workers escalan de forma independiente (`--scale worker=N`); la presión de escritura es un control que tú ajustas |
+| Modo de falla | Los errores son visibles de inmediato para el cliente (`500`, timeouts) | Degradación silenciosa: la API sigue sana mientras crece el backlog; requiere alertas sobre profundidad de cola y lag del consumidor |
+| Seguridad de los datos ante una caída | La petición falla y el cliente puede reintentar | Cola durable + mensajes persistentes + ack manual: los jobs en curso se reentregan (at-least-once, así que puede haber duplicados) |
+| Métricas clave | Latencia p50/p95/p99, tasa de errores, saturación del pool de la BD | Latencia de la API, profundidad de cola, tasa de publish vs ack, tiempo total hasta la persistencia, reentregas |
+| Costo de infraestructura | Menos piezas móviles | Un componente con estado más (RabbitMQ) que operar, monitorear, respaldar y actualizar |
 
-### When each one wins
+### Cuándo gana cada una
 
-- **Choose sync** when the client needs the result immediately, the load is predictable, or strong consistency is a business requirement (payments, inventory checks).
-- **Choose async** when traffic is bursty, the write is slow or can fail transiently, the client can accept "accepted, processing", or you need to protect the database from spikes.
+- **Elige la síncrona** cuando el cliente necesita el resultado de inmediato, la carga es predecible o la consistencia fuerte es un requisito de negocio (pagos, verificación de inventario).
+- **Elige la asíncrona** cuando el tráfico llega en ráfagas, la escritura es lenta o puede fallar de forma transitoria, el cliente acepta un "recibido, en proceso", o necesitas proteger la base de datos de los picos.
 
-### Suggested experiment
+### Experimento sugerido
 
-1. Start the stack and fire the same write load at both APIs (any HTTP load tool, e.g. `k6`, `hey` or `vegeta`).
-2. Increase concurrency step by step until `api-sync` starts degrading.
-3. Compare: client latency percentiles and error rate, RabbitMQ queue depth (management UI at http://localhost:15672), and the time until rows actually appear in Postgres.
-4. Repeat with `--scale worker=1`, `3` and `5`, and with Postgres stopped for a few seconds, to see how each version fails and recovers.
+1. Levanta el stack y lanza la misma carga de escrituras contra ambas APIs (cualquier herramienta de carga HTTP, p. ej. `k6`, `hey` o `vegeta`).
+2. Aumenta la concurrencia paso a paso hasta que `api-sync` empiece a degradarse.
+3. Compara: percentiles de latencia y tasa de errores en el cliente, profundidad de la cola en RabbitMQ (panel en http://localhost:15672) y el tiempo hasta que las filas aparecen realmente en Postgres.
+4. Repite con `--scale worker=1`, `3` y `5`, y deteniendo Postgres unos segundos, para ver cómo falla y se recupera cada versión.
 
-| App | Role | Port |
-|-----|------|------|
-| `api-sync` | Full CRUD directly against Postgres | 8081 |
-| `api-async` | Reads from Postgres; validates writes and publishes them to RabbitMQ | 8082 |
-| `worker` | Consumes typed jobs (`create` / `update` / `delete`) and applies them to Postgres (scalable) | — |
+## Componentes
 
-| Route | api-sync | api-async |
-|-------|----------|-----------|
-| `POST /reservations` | insert → `201` | enqueue `create` → `202` |
-| `GET /reservations?limit=&offset=` | read → `200` | read → `200` (synchronous) |
-| `GET /reservations/:id` | read → `200` / `404` | read → `200` / `404` (synchronous) |
-| `PUT /reservations/:id` | replace email + name → `200` / `404` | enqueue `update` → `202` |
-| `DELETE /reservations/:id` | delete → `204` / `404` | enqueue `delete` → `202` |
+| App | Rol | Puerto |
+|-----|-----|--------|
+| `api-sync` | CRUD completo directo contra Postgres | 8081 |
+| `api-async` | Lee de Postgres; valida las escrituras y las publica en RabbitMQ | 8082 |
+| `worker` | Consume jobs tipados (`create` / `update` / `delete`) y los aplica en Postgres (escalable) | — |
 
-All three share the reservation use cases (`app/internal/reservation`). HTTP and the queue consumer are adapters.
-Deletes are soft deletes (`deleted_at`); a deleted id returns `404`.
+| Ruta | api-sync | api-async |
+|------|----------|-----------|
+| `POST /reservations` | insert → `201` | encola `create` → `202` |
+| `GET /reservations?limit=&offset=` | lectura → `200` | lectura → `200` (síncrona) |
+| `GET /reservations/:id` | lectura → `200` / `404` | lectura → `200` / `404` (síncrona) |
+| `PUT /reservations/:id` | reemplaza email + name → `200` / `404` | encola `update` → `202` |
+| `DELETE /reservations/:id` | borra → `204` / `404` | encola `delete` → `202` |
 
-## Run
+Las tres comparten los casos de uso de reservas (`app/internal/reservation`). HTTP y el consumidor de la cola son adaptadores.
+Los borrados son lógicos (`deleted_at`); un id borrado devuelve `404`.
+
+## Ejecutar
 
 ```sh
 docker compose up --build
 ```
 
-Scale workers horizontally:
+Escalar workers horizontalmente:
 
 ```sh
 docker compose up --build --scale worker=3
 ```
 
-RabbitMQ UI: http://localhost:15672 (guest / guest).
+Panel de RabbitMQ: http://localhost:15672 (guest / guest).
 
-## Try it
+## Probar
 
 ```sh
-# Sync: stored before the response
+# Síncrona: guardado antes de la respuesta
 curl -i -X POST localhost:8081/reservations \
   -H 'Content-Type: application/json' \
   -d '{"email":"ana@example.com","name":"Ana"}'
 
-# Async: queued, stored later by a worker
+# Asíncrona: encolado, lo guarda después un worker
 curl -i -X POST localhost:8082/reservations \
   -H 'Content-Type: application/json' \
   -d '{"email":"ana@example.com","name":"Ana"}'
 
-# List (limit defaults to 20, max 100; offset defaults to 0)
+# Listar (limit por defecto 20, máximo 100; offset por defecto 0)
 curl -i 'localhost:8081/reservations?limit=10&offset=0'
 curl -i 'localhost:8082/reservations?limit=10&offset=0'
 
-# Get by id
+# Obtener por id
 curl -i localhost:8081/reservations/1
 
-# Replace email and name: sync returns the updated reservation (200)
+# Reemplazar email y name: la síncrona devuelve la reserva actualizada (200)
 curl -i -X PUT localhost:8081/reservations/1 \
   -H 'Content-Type: application/json' \
   -d '{"email":"bob@example.com","name":"Bob"}'
 
-# Replace via the queue: 202, applied later by a worker
+# Reemplazar vía la cola: 202, lo aplica después un worker
 curl -i -X PUT localhost:8082/reservations/1 \
   -H 'Content-Type: application/json' \
   -d '{"email":"carol@example.com","name":"Carol"}'
 
-# Delete: sync returns 204, async returns 202
+# Borrar: la síncrona devuelve 204, la asíncrona 202
 curl -i -X DELETE localhost:8081/reservations/1
 curl -i -X DELETE localhost:8082/reservations/2
 
@@ -125,36 +129,36 @@ curl -i -X DELETE localhost:8082/reservations/2
 curl localhost:8081/health
 ```
 
-Invalid input (missing/invalid `email`, missing `name`), a non-positive or non-numeric id, or an invalid `limit`/`offset` returns `400`. A missing id returns `404` on the sync API; on the async API a queued update/delete of a missing id is dropped by the worker (logged, not retried).
+Una entrada inválida (`email` ausente o inválido, `name` ausente), un id no positivo o no numérico, o un `limit`/`offset` inválido devuelven `400`. Un id inexistente devuelve `404` en la API síncrona; en la asíncrona, un update/delete encolado de un id inexistente lo descarta el worker (se registra en el log y no se reintenta).
 
-## API docs
+## Documentación de la API
 
-Each HTTP API serves Swagger UI and its OpenAPI 3 spec (specs live in `app/internal/httpapi/openapi/`):
+Cada API HTTP sirve Swagger UI y su especificación OpenAPI 3 (las especificaciones están en `app/internal/httpapi/openapi/`):
 
-- Sync: http://localhost:8081/swagger (spec: `/openapi.yaml`)
-- Async: http://localhost:8082/swagger (spec: `/openapi.yaml`)
+- Síncrona: http://localhost:8081/swagger (especificación: `/openapi.yaml`)
+- Asíncrona: http://localhost:8082/swagger (especificación: `/openapi.yaml`)
 
-Swagger UI assets load from the unpkg CDN, so the browser needs internet access.
+Los recursos de Swagger UI se cargan desde el CDN de unpkg, así que el navegador necesita acceso a internet.
 
-## Build one app
+## Construir una sola app
 
 ```sh
 docker build --build-arg APP=worker -t reservations-worker app/
 ```
 
-## Configuration
+## Configuración
 
-| Variable | Default | Used by |
-|----------|---------|---------|
+| Variable | Valor por defecto | Usada por |
+|----------|-------------------|-----------|
 | `HTTP_PORT` | `8080` | APIs |
-| `DATABASE_URL` | built from `DB_*` | APIs, worker |
+| `DATABASE_URL` | se construye a partir de `DB_*` | APIs, worker |
 | `DB_HOST` / `DB_PORT` | `postgres` / `5432` | APIs, worker |
 | `DB_USER` / `DB_PASSWORD` | `postgres` / `postgres` | APIs, worker |
 | `DB_NAME` | `reservations` | APIs, worker |
 | `RABBITMQ_URL` | `amqp://guest:guest@rabbitmq:5672/` | api-async, worker |
 | `QUEUE_NAME` | `reservations` | api-async, worker |
-| `WORKER_CONCURRENCY` | `10` | worker (goroutines per instance) |
-| `WORKER_PREFETCH` | `20` | worker (RabbitMQ QoS) |
+| `WORKER_CONCURRENCY` | `10` | worker (goroutines por instancia) |
+| `WORKER_PREFETCH` | `20` | worker (QoS de RabbitMQ) |
 
 ## Tests
 
