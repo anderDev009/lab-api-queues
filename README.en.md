@@ -160,6 +160,10 @@ docker build --build-arg APP=worker -t reservations-worker app/
 | `WORKER_CONCURRENCY` | `10` | worker (goroutines per instance) |
 | `WORKER_PREFETCH` | `20` | worker (RabbitMQ QoS) |
 
+## Pending
+
+- **Orchestration manifests** (e.g. Kubernetes: Deployments, Services, ConfigMaps/Secrets, worker scaling). Not included yet: the author will add them as part of their orchestration studies. For now the stack only runs with Docker Compose.
+
 ## Tests
 
 ```sh
