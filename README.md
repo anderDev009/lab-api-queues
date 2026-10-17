@@ -91,6 +91,21 @@ docker compose up --build --scale worker=3
 
 Panel de RabbitMQ: http://localhost:15672 (guest / guest).
 
+## Ejecutar en Kubernetes (Kustomize)
+
+Los manifiestos están en `infrastructure/` y se organizan con Kustomize: una `base` por componente y overlays por entorno. El objetivo es correr el stack en un cluster para hacer pruebas de carga con k6.
+
+| Base | Recursos |
+|------|----------|
+| `base/database` | Postgres 15: `PersistentVolumeClaim`, `Deployment` y `Service` (`bd-service:5432`) |
+| `base/rabbitmq` | RabbitMQ: `Deployment` y `Service` (`rabbitmq-service`, AMQP + panel) |
+| `base/api-sync` | `Deployment` de `api-sync` |
+| `base/api-async` | `Deployment` de `api-async` |
+
+```sh
+kubectl apply -k infrastructure/overlays/staging
+```
+
 ## Probar
 
 ```sh
@@ -162,7 +177,8 @@ docker build --build-arg APP=worker -t reservations-worker app/
 
 ## Pendiente
 
-- **Manifiestos de orquestación** (p. ej. Kubernetes: Deployments, Services, ConfigMaps/Secrets, escalado del worker). Todavía no están incluidos. Por ahora el stack solo se ejecuta con Docker Compose.
+- **Ingress para cada servicio** (`api-sync`, `api-async` y el panel de RabbitMQ), para exponerlos fuera del cluster. Es la próxima actualización.
+- **Deployment del `worker`** y su escalado en Kubernetes. Por ahora el worker solo corre con Docker Compose.
 
 ## Tests
 

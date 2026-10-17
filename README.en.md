@@ -91,6 +91,21 @@ docker compose up --build --scale worker=3
 
 RabbitMQ UI: http://localhost:15672 (guest / guest).
 
+## Run on Kubernetes (Kustomize)
+
+Manifests live in `infrastructure/` and are organized with Kustomize: one `base` per component plus per-environment overlays. The goal is to run the stack on a cluster for k6 load testing.
+
+| Base | Resources |
+|------|-----------|
+| `base/database` | Postgres 15: `PersistentVolumeClaim`, `Deployment`, and `Service` (`bd-service:5432`) |
+| `base/rabbitmq` | RabbitMQ: `Deployment` and `Service` (`rabbitmq-service`, AMQP + dashboard) |
+| `base/api-sync` | `api-sync` `Deployment` |
+| `base/api-async` | `api-async` `Deployment` |
+
+```sh
+kubectl apply -k infrastructure/overlays/staging
+```
+
 ## Try it
 
 ```sh
@@ -162,7 +177,8 @@ docker build --build-arg APP=worker -t reservations-worker app/
 
 ## Pending
 
-- **Orchestration manifests** (e.g. Kubernetes: Deployments, Services, ConfigMaps/Secrets, worker scaling). Not included yet: the author will add them as part of their orchestration studies. For now the stack only runs with Docker Compose.
+- **Ingress for each service** (`api-sync`, `api-async`, and the RabbitMQ dashboard) to expose them outside the cluster. This is the next update.
+- **`worker` Deployment** and its scaling on Kubernetes. For now the worker only runs with Docker Compose.
 
 ## Tests
 
