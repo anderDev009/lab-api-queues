@@ -1,0 +1,38 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-async
+  labels:
+    app: api-async
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: api-async
+  
+  template:
+    metadata:
+      labels:
+        app: api-async
+    
+    spec:
+      containers:
+        - name: api-async
+          image: richarddev009/api_sync_async_membership:1.0
+          ports:
+            - containerPort: 8080
+          args:
+            - "--APP=api-async"
+          env:
+            - name: RABBITMQ_URL
+              value: "amqp://guest:guest@rabbitmq-service:5672/"
+            - name: QUEUE_NAME
+              value: "reservations"
+            - name: POSTGRES_USER
+              value: "postgres"
+            - name: POSTGRES_PASSWORD
+              value: "postgres"
+            - name: POSTGRES_DB
+              value: "reservations"
+            - name: DB_HOST
+              value: "bd-service"
