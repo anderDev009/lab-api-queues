@@ -8,7 +8,7 @@ metadata:
 spec:
   ingressClassName: traefik
   rules:
-  - host: api-sync.com
+  - host: api-sync.lan
     http:
       paths:
       - path: /

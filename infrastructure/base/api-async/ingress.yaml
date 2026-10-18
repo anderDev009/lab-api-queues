@@ -6,7 +6,7 @@ metadata:
 spec:
   ingressClassName: traefik
   rules:
-  - host: api-async.com
+  - host: api-async.lan
     http:
       paths:
       - path: /

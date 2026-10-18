@@ -18,11 +18,9 @@ spec:
     spec:
       containers:
         - name: api-sync
-          image: richarddev009/api_sync_async_membership:1.0
+          image: richarddev009/api_sync_async_membership:api-sync-1.0
           ports:
             - containerPort: 8080
-          args:
-            - "--APP=api-sync"
           env:
             - name: POSTGRES_USER
               value: "postgres"
