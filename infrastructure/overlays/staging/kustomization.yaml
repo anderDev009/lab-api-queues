@@ -6,4 +6,4 @@ resources:
   - ../../base/api-sync
   - ../../base/api-async
   - ../../base/rabbitmq
-
+  - ../../base/worker/

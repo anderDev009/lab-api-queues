@@ -1,0 +1,56 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  labels:
+    app: worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: worker
+  
+  template:
+    metadata:
+      labels:
+        app: worker
+    
+    spec:
+      containers:
+        - name: worker
+          image: richarddev009/api_sync_async_membership:1.0
+          ports:
+            - containerPort: 8080
+          args:
+            - "--APP=worker"
+          env:
+            - name: RABBITMQ_URL
+              value: "amqp://guest:guest@rabbitmq-service:5672/"
+            - name: QUEUE_NAME
+              value: "reservations"
+            - name: POSTGRES_USER
+              value: "postgres"
+            - name: POSTGRES_PASSWORD
+              value: "postgres"
+            - name: POSTGRES_DB
+              value: "reservations"
+            - name: DB_HOST
+              value: "bd-service"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: worker-svc
+  namespace: queue-lab
+spec:
+  selector:
+    app: worker
+  type: LoadBalancer
+  sessionAffinity: None
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: 10800
+  ports:
+  - protocol: TCP
+    port: 8081
+    targetPort: 8080 

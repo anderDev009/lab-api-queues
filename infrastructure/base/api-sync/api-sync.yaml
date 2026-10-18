@@ -32,3 +32,21 @@ spec:
               value: "reservations"
             - name: DB_HOST
               value: "bd-service"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-sync-svc
+  namespace: queue-lab
+spec:
+  selector:
+    app: api-sync
+  type: LoadBalancer
+  sessionAffinity: None
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: 10800
+  ports:
+  - protocol: TCP
+    port: 8081
+    targetPort: 8080 

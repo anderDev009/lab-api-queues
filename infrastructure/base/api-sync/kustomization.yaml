@@ -3,3 +3,4 @@ kind: Kustomization
 
 resources:
   - api-sync.yaml
+  - ingress.yaml
