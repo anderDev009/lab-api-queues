@@ -99,12 +99,24 @@ Manifests live in `infrastructure/` and are organized with Kustomize: one `base`
 |------|-----------|
 | `base/database` | Postgres 15: `PersistentVolumeClaim`, `Deployment`, and `Service` (`bd-service:5432`) |
 | `base/rabbitmq` | RabbitMQ: `Deployment` and `Service` (`rabbitmq-service`, AMQP + dashboard) |
-| `base/api-sync` | `api-sync` `Deployment` |
-| `base/api-async` | `api-async` `Deployment` |
+| `base/api-sync` | `api-sync` `Deployment`, `Service`, and `Ingress` (host `api-sync.lan`, Traefik) |
+| `base/api-async` | `api-async` `Deployment`, `Service`, and `Ingress` (host `api-async.lan`, Traefik) |
+| `base/worker` | `worker` `Deployment` |
+
+Each app uses its own image because `APP` is a **build** argument, not a runtime one. The binary is chosen at compile time, so passing `--APP=...` in the container `args` has no effect. To build and push the three images:
+
+```sh
+for APP in api-sync api-async worker; do
+  docker build --build-arg APP=$APP -t richarddev009/api_sync_async_membership:$APP-1.0 app/ \
+  && docker push richarddev009/api_sync_async_membership:$APP-1.0
+done
+```
 
 ```sh
 kubectl apply -k infrastructure/overlays/staging
 ```
+
+To reach the services through Ingress, the `api-sync.lan` and `api-async.lan` hosts must resolve to the cluster IP (for example, with an `/etc/hosts` entry).
 
 ## Try it
 
@@ -177,8 +189,9 @@ docker build --build-arg APP=worker -t reservations-worker app/
 
 ## Pending
 
-- **Ingress for each service** (`api-sync`, `api-async`, and the RabbitMQ dashboard) to expose them outside the cluster. This is the next update.
-- **`worker` Deployment** and its scaling on Kubernetes. For now the worker only runs with Docker Compose.
+- **Ingress for the RabbitMQ dashboard**. `api-sync` and `api-async` are already exposed through Ingress.
+- **`worker` scaling on Kubernetes** (replicas or HPA). The `Deployment` already exists.
+- **k6 load tests** against the cluster.
 
 ## Tests
 
