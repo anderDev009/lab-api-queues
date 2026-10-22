@@ -20,6 +20,8 @@ type fakeService struct {
 	listCalled           bool
 	gotLimit, gotOffset  int
 	updatedID, deletedID uint
+	truncated            bool
+	truncateErr          error
 }
 
 var existing = reservation.Reservation{ID: 1, Email: "ana@example.com", Name: "Ana"}
@@ -64,6 +66,11 @@ func (f *fakeService) DeleteReservation(_ context.Context, id uint) error {
 	}
 	f.deletedID = id
 	return nil
+}
+
+func (f *fakeService) TruncateReservations(_ context.Context) error {
+	f.truncated = true
+	return f.truncateErr
 }
 
 type fakePublisher struct {
@@ -249,6 +256,28 @@ func TestAsyncWriteRoutes(t *testing.T) {
 			got.RequestID = ""
 			if got != *tt.wantJob {
 				t.Fatalf("published job = %+v, want %+v", got, *tt.wantJob)
+			}
+		})
+	}
+}
+
+func TestTruncate(t *testing.T) {
+	for api := range routers(&fakeService{}) {
+		t.Run(api+" success", func(t *testing.T) {
+			svc := &fakeService{}
+			rec := do(t, routers(svc)[api], http.MethodPost, "/admin/truncate", "")
+			if rec.Code != http.StatusNoContent {
+				t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
+			}
+			if !svc.truncated {
+				t.Fatal("service was not asked to truncate")
+			}
+		})
+		t.Run(api+" error", func(t *testing.T) {
+			svc := &fakeService{truncateErr: errors.New("boom")}
+			rec := do(t, routers(svc)[api], http.MethodPost, "/admin/truncate", "")
+			if rec.Code != http.StatusInternalServerError {
+				t.Fatalf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
 			}
 		})
 	}

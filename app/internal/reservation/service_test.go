@@ -70,6 +70,14 @@ func (f *fakeRepo) Update(_ context.Context, r *reservation.Reservation) error {
 	return nil
 }
 
+func (f *fakeRepo) Truncate(_ context.Context) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.saved, f.deleted = nil, nil
+	return nil
+}
+
 func (f *fakeRepo) Delete(_ context.Context, id uint) error {
 	if _, err := f.find(id); err != nil {
 		return err
@@ -289,5 +297,25 @@ func TestServiceDeleteReservation(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestServiceTruncateReservations(t *testing.T) {
+	repo := &fakeRepo{}
+	svc := reservation.NewService(repo)
+	if _, err := svc.CreateReservation(context.Background(), reservation.CreateReservationInput{Email: "ana@example.com", Name: "Ana"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := svc.TruncateReservations(context.Background()); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+	if len(repo.saved) != 0 {
+		t.Fatalf("saved = %d, want 0", len(repo.saved))
+	}
+
+	repo.err = errors.New("db down")
+	if err := svc.TruncateReservations(context.Background()); !errors.Is(err, repo.err) {
+		t.Fatalf("err = %v, want %v", err, repo.err)
 	}
 }

@@ -73,3 +73,8 @@ func (s *Service) DeleteReservation(ctx context.Context, id uint) error {
 	}
 	return s.repo.Delete(ctx, id)
 }
+
+// TruncateReservations removes every reservation and restarts ids from 1.
+func (s *Service) TruncateReservations(ctx context.Context) error {
+	return s.repo.Truncate(ctx)
+}

@@ -132,3 +132,12 @@ func (r *Repository) Delete(ctx context.Context, id uint) error {
 	}
 	return nil
 }
+
+// Truncate physically empties the table (soft-deleted rows included) and
+// restarts the id sequence.
+func (r *Repository) Truncate(ctx context.Context) error {
+	if err := r.db.WithContext(ctx).Exec("TRUNCATE TABLE reservations RESTART IDENTITY").Error; err != nil {
+		return fmt.Errorf("truncate reservations: %w", err)
+	}
+	return nil
+}

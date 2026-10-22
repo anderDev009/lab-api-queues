@@ -21,9 +21,21 @@ type Reader interface {
 	ListReservations(ctx context.Context, limit, offset int) ([]reservation.Reservation, error)
 }
 
+// Truncator empties the reservations table; used to reset state between load tests.
+type Truncator interface {
+	TruncateReservations(ctx context.Context) error
+}
+
+// AsyncService is what the async API needs to read and reset data directly.
+type AsyncService interface {
+	Reader
+	Truncator
+}
+
 // SyncService is the full CRUD use case set consumed by the sync API.
 type SyncService interface {
 	Reader
+	Truncator
 	CreateReservation(ctx context.Context, in reservation.CreateReservationInput) (reservation.Reservation, error)
 	UpdateReservation(ctx context.Context, id uint, in reservation.CreateReservationInput) (reservation.Reservation, error)
 	DeleteReservation(ctx context.Context, id uint) error
@@ -43,6 +55,7 @@ func NewSyncRouter(svc SyncService) *gin.Engine {
 	r := newRouter()
 	registerDocs(r, syncSpec)
 	registerReadRoutes(r, svc)
+	registerAdminRoutes(r, svc)
 	r.POST("/reservations", func(c *gin.Context) {
 		in, ok := bindInput(c)
 		if !ok {
@@ -86,11 +99,12 @@ func NewSyncRouter(svc SyncService) *gin.Engine {
 }
 
 // NewAsyncRouter reads synchronously from the database and validates writes
-// before enqueuing them for the worker.
-func NewAsyncRouter(reader Reader, pub reservation.Publisher) *gin.Engine {
+// before enqueuing them for the worker. Truncate bypasses the queue.
+func NewAsyncRouter(svc AsyncService, pub reservation.Publisher) *gin.Engine {
 	r := newRouter()
 	registerDocs(r, asyncSpec)
-	registerReadRoutes(r, reader)
+	registerReadRoutes(r, svc)
+	registerAdminRoutes(r, svc)
 	r.POST("/reservations", func(c *gin.Context) {
 		in, ok := bindInput(c)
 		if !ok {
@@ -125,6 +139,18 @@ func NewAsyncRouter(reader Reader, pub reservation.Publisher) *gin.Engine {
 		enqueue(c, pub, reservation.Job{Type: reservation.JobDelete, ID: id})
 	})
 	return r
+}
+
+// registerAdminRoutes exposes destructive maintenance routes. It is intended
+// for load-test environments only.
+func registerAdminRoutes(r *gin.Engine, t Truncator) {
+	r.POST("/admin/truncate", func(c *gin.Context) {
+		if err := t.TruncateReservations(c.Request.Context()); err != nil {
+			writeError(c, err)
+			return
+		}
+		c.Status(http.StatusNoContent)
+	})
 }
 
 func registerReadRoutes(r *gin.Engine, reader Reader) {

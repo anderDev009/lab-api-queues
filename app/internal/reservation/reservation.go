@@ -80,6 +80,8 @@ type Repository interface {
 	// and fills r with the stored state.
 	Update(ctx context.Context, r *Reservation) error
 	Delete(ctx context.Context, id uint) error
+	// Truncate removes every reservation and resets the id sequence.
+	Truncate(ctx context.Context) error
 }
 
 // Publisher is the port used by the async API to enqueue reservation requests.

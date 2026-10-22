@@ -82,6 +82,16 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "500":
           $ref: "#/components/responses/InternalError"
+  /admin/truncate:
+    post:
+      summary: Truncate the reservations table
+      description: Deletes every reservation and restarts ids. Destructive; for load-test environments only.
+      operationId: truncateReservations
+      responses:
+        "204":
+          description: Table truncated
+        "500":
+          $ref: "#/components/responses/InternalError"
   /health:
     get:
       summary: Liveness check
