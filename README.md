@@ -2,7 +2,18 @@
 
 **Español** | [English](README.en.md)
 
-Laboratorio para comparar el procesamiento síncrono y el procesamiento con colas en Go.
+<p>
+  <img alt="Go" src="https://img.shields.io/badge/Go-00ADD8?logo=go&logoColor=white">
+  <img alt="PostgreSQL" src="https://img.shields.io/badge/PostgreSQL-4169E1?logo=postgresql&logoColor=white">
+  <img alt="RabbitMQ" src="https://img.shields.io/badge/RabbitMQ-FF6600?logo=rabbitmq&logoColor=white">
+  <img alt="Kubernetes" src="https://img.shields.io/badge/Kubernetes-326CE5?logo=kubernetes&logoColor=white">
+  <img alt="k6" src="https://img.shields.io/badge/k6-7D64FF?logo=k6&logoColor=white">
+  <img alt="Docker" src="https://img.shields.io/badge/Docker-2496ED?logo=docker&logoColor=white">
+</p>
+
+Laboratorio para comparar el procesamiento síncrono y el procesamiento con colas en Go, desplegado en Kubernetes y medido con k6.
+
+**Contenido:** [Por qué existe](#por-qué-existe-este-proyecto) · [Arquitecturas](#las-dos-arquitecturas) · [Componentes](#componentes) · [Ejecutar](#ejecutar) · [Kubernetes](#ejecutar-en-kubernetes-kustomize) · [Pruebas de carga](#pruebas-de-carga-con-k6) · [API](#documentación-de-la-api) · [Configuración](#configuración) · [Pendiente](#pendiente)
 
 ## Por qué existe este proyecto
 
@@ -14,6 +25,19 @@ Ambas versiones implementan los mismos casos de uso sobre el mismo stack (Go, Po
 
 ### Las dos arquitecturas
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/img/architecture.es.dark.png">
+    <img alt="Diagrama de arquitectura: k6 entra por el Ingress de Traefik; api-sync escribe directo en PostgreSQL y api-async publica en RabbitMQ para que un worker escriba en PostgreSQL" src="docs/img/architecture.es.light.png" width="900">
+  </picture>
+</p>
+
+- **`api-sync`**: la petición escribe en Postgres y responde `201`; el dato ya está guardado.
+- **`api-async`**: la petición se valida, se publica en RabbitMQ y responde `202`; un worker lo guarda después.
+
+<details>
+<summary>Versión en texto</summary>
+
 ```
 api-sync:   cliente ──HTTP──► API ──INSERT──► Postgres ──► 201 (el dato ya está guardado)
 
@@ -22,6 +46,8 @@ api-async:  cliente ──HTTP──► API ──publish──► RabbitMQ ─�
                                                    ▼
                                      worker × N ──INSERT──► Postgres
 ```
+
+</details>
 
 ### Tradeoffs: visión de arquitectura de software
 
@@ -73,9 +99,12 @@ api-async:  cliente ──HTTP──► API ──publish──► RabbitMQ ─�
 | `GET /reservations/:id` | lectura → `200` / `404` | lectura → `200` / `404` (síncrona) |
 | `PUT /reservations/:id` | reemplaza email + name → `200` / `404` | encola `update` → `202` |
 | `DELETE /reservations/:id` | borra → `204` / `404` | encola `delete` → `202` |
+| `POST /admin/truncate` | vacía la tabla → `204` | vacía la tabla (sin pasar por la cola) → `204` |
 
 Las tres comparten los casos de uso de reservas (`app/internal/reservation`). HTTP y el consumidor de la cola son adaptadores.
 Los borrados son lógicos (`deleted_at`); un id borrado devuelve `404`.
+
+> ⚠️ `POST /admin/truncate` ejecuta `TRUNCATE TABLE reservations RESTART IDENTITY`: borra todo y reinicia los ids. No tiene autenticación; está pensado solo para restablecer el estado entre pruebas de carga.
 
 ## Ejecutar
 
@@ -103,14 +132,17 @@ Los manifiestos están en `infrastructure/` y se organizan con Kustomize: una `b
 | `base/api-async` | `Deployment`, `Service` e `Ingress` de `api-async` (host `api-async.lan`, Traefik) |
 | `base/worker` | `Deployment` del `worker` |
 
-Cada app usa su propia imagen, porque `APP` es un argumento de **build** y no de runtime. El binario se elige al compilar, así que pasar `--APP=...` en los `args` del contenedor no tiene efecto. Para construir y publicar las tres imágenes:
+Cada app usa su propia imagen, porque `APP` es un argumento de **build** y no de runtime. El binario se elige al compilar, así que pasar `--APP=...` en los `args` del contenedor no tiene efecto. Para construir y publicar las imágenes (`api-sync` y `api-async` en `1.1`, `worker` en `1.0`):
 
 ```sh
-for APP in api-sync api-async worker; do
-  docker build --build-arg APP=$APP -t richarddev009/api_sync_async_membership:$APP-1.0 app/ \
-  && docker push richarddev009/api_sync_async_membership:$APP-1.0
-done
+IMAGE=richarddev009/api_sync_async_membership
+
+docker build --build-arg APP=api-sync  -t $IMAGE:api-sync-1.1  app/ && docker push $IMAGE:api-sync-1.1
+docker build --build-arg APP=api-async -t $IMAGE:api-async-1.1 app/ && docker push $IMAGE:api-async-1.1
+docker build --build-arg APP=worker    -t $IMAGE:worker-1.0    app/ && docker push $IMAGE:worker-1.0
 ```
+
+Los `Deployment` de `api-sync` y `api-async` usan `imagePullPolicy: Always`, así que volver a publicar el mismo tag y ejecutar `kubectl -n queue-lab rollout restart deployment/api-sync deployment/api-async` basta para actualizarlos.
 
 ```sh
 kubectl apply -k infrastructure/overlays/staging
@@ -187,11 +219,33 @@ docker build --build-arg APP=worker -t reservations-worker app/
 | `WORKER_CONCURRENCY` | `10` | worker (goroutines por instancia) |
 | `WORKER_PREFETCH` | `20` | worker (QoS de RabbitMQ) |
 
+## Pruebas de carga con k6
+
+Los scripts están en `tests/performance/`:
+
+| Archivo | Qué hace |
+|---------|----------|
+| `performance-test.js` | 10 usuarios virtuales envían 1000 `POST /reservations` a cada API, sin repetir emails (`largeDataset`). Valida `201` en la síncrona y `202` en la asíncrona. |
+| `rate-test.js` | Aplica tasas constantes de **100, 500 y 1000 solicitudes/s** (30 s cada una) a ambas APIs a la vez, con emails generados. |
+| `mails-sync.js` / `mails-async.js` | Datasets `{ email, name }` (`small`, `medium`, `large`, `edgeCase`, `invalid`) sin emails repetidos entre ambos archivos. |
+
+Los umbrales (`thresholds`) separan cada API con tags (`{api:sync}` / `{api:async}`): p95 de latencia, tasa de errores y checks.
+
+```sh
+# Restablecer el estado antes de cada corrida (ambas APIs comparten la base de datos)
+curl -X POST http://api-sync.lan/admin/truncate
+
+k6 run tests/performance/performance-test.js
+k6 run tests/performance/rate-test.js
+```
+
+> La latencia de `api-async` solo mide el tiempo de **encolar** (`202`). El tiempo hasta que el dato queda guardado se observa en la profundidad de la cola de RabbitMQ.
+
 ## Pendiente
 
 - **Ingress para el panel de RabbitMQ**. `api-sync` y `api-async` ya están expuestas por Ingress.
 - **Escalado del `worker` en Kubernetes** (réplicas o HPA). El `Deployment` ya existe.
-- **Pruebas de carga con k6** contra el cluster.
+- **Ejecutar y documentar los resultados** de las pruebas de carga contra el cluster (los scripts ya existen).
 
 ## Tests
 

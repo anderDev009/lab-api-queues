@@ -2,7 +2,18 @@
 
 [Español](README.md) | **English**
 
-Learning lab comparing synchronous vs queued request processing in Go.
+<p>
+  <img alt="Go" src="https://img.shields.io/badge/Go-00ADD8?logo=go&logoColor=white">
+  <img alt="PostgreSQL" src="https://img.shields.io/badge/PostgreSQL-4169E1?logo=postgresql&logoColor=white">
+  <img alt="RabbitMQ" src="https://img.shields.io/badge/RabbitMQ-FF6600?logo=rabbitmq&logoColor=white">
+  <img alt="Kubernetes" src="https://img.shields.io/badge/Kubernetes-326CE5?logo=kubernetes&logoColor=white">
+  <img alt="k6" src="https://img.shields.io/badge/k6-7D64FF?logo=k6&logoColor=white">
+  <img alt="Docker" src="https://img.shields.io/badge/Docker-2496ED?logo=docker&logoColor=white">
+</p>
+
+Learning lab comparing synchronous vs queued request processing in Go, deployed on Kubernetes and measured with k6.
+
+**Contents:** [Why it exists](#why-this-project-exists) · [Architectures](#the-two-architectures) · [Components](#components) · [Run](#run) · [Kubernetes](#run-on-kubernetes-kustomize) · [Load tests](#load-tests-with-k6) · [API docs](#api-docs) · [Configuration](#configuration) · [Pending](#pending)
 
 ## Why this project exists
 
@@ -14,6 +25,19 @@ Both versions implement the same use cases on the same stack (Go, Postgres, Rabb
 
 ### The two architectures
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/img/architecture.en.dark.png">
+    <img alt="Architecture diagram: k6 enters through the Traefik Ingress; api-sync writes straight to PostgreSQL while api-async publishes to RabbitMQ and a worker writes to PostgreSQL" src="docs/img/architecture.en.light.png" width="900">
+  </picture>
+</p>
+
+- **`api-sync`**: the request writes to Postgres and replies `201`; the data is already stored.
+- **`api-async`**: the request is validated, published to RabbitMQ and answered with `202`; a worker stores it later.
+
+<details>
+<summary>Text version</summary>
+
 ```
 api-sync:   client ──HTTP──► API ──INSERT──► Postgres ──► 201 (data is stored)
 
@@ -22,6 +46,8 @@ api-async:  client ──HTTP──► API ──publish──► RabbitMQ ─�
                                                   ▼
                                     worker × N ──INSERT──► Postgres
 ```
+
+</details>
 
 ### Tradeoffs: software architecture view
 
@@ -73,9 +99,12 @@ api-async:  client ──HTTP──► API ──publish──► RabbitMQ ─�
 | `GET /reservations/:id` | read → `200` / `404` | read → `200` / `404` (synchronous) |
 | `PUT /reservations/:id` | replace email + name → `200` / `404` | enqueue `update` → `202` |
 | `DELETE /reservations/:id` | delete → `204` / `404` | enqueue `delete` → `202` |
+| `POST /admin/truncate` | empties the table → `204` | empties the table (bypasses the queue) → `204` |
 
 All three share the reservation use cases (`app/internal/reservation`). HTTP and the queue consumer are adapters.
 Deletes are soft deletes (`deleted_at`); a deleted id returns `404`.
+
+> ⚠️ `POST /admin/truncate` runs `TRUNCATE TABLE reservations RESTART IDENTITY`: it deletes everything and resets ids. It has no authentication and is meant only to reset state between load tests.
 
 ## Run
 
@@ -103,14 +132,17 @@ Manifests live in `infrastructure/` and are organized with Kustomize: one `base`
 | `base/api-async` | `api-async` `Deployment`, `Service`, and `Ingress` (host `api-async.lan`, Traefik) |
 | `base/worker` | `worker` `Deployment` |
 
-Each app uses its own image because `APP` is a **build** argument, not a runtime one. The binary is chosen at compile time, so passing `--APP=...` in the container `args` has no effect. To build and push the three images:
+Each app uses its own image because `APP` is a **build** argument, not a runtime one. The binary is chosen at compile time, so passing `--APP=...` in the container `args` has no effect. To build and push the images (`api-sync` and `api-async` at `1.1`, `worker` at `1.0`):
 
 ```sh
-for APP in api-sync api-async worker; do
-  docker build --build-arg APP=$APP -t richarddev009/api_sync_async_membership:$APP-1.0 app/ \
-  && docker push richarddev009/api_sync_async_membership:$APP-1.0
-done
+IMAGE=richarddev009/api_sync_async_membership
+
+docker build --build-arg APP=api-sync  -t $IMAGE:api-sync-1.1  app/ && docker push $IMAGE:api-sync-1.1
+docker build --build-arg APP=api-async -t $IMAGE:api-async-1.1 app/ && docker push $IMAGE:api-async-1.1
+docker build --build-arg APP=worker    -t $IMAGE:worker-1.0    app/ && docker push $IMAGE:worker-1.0
 ```
+
+The `api-sync` and `api-async` `Deployment`s use `imagePullPolicy: Always`, so republishing the same tag and running `kubectl -n queue-lab rollout restart deployment/api-sync deployment/api-async` is enough to update them.
 
 ```sh
 kubectl apply -k infrastructure/overlays/staging
@@ -187,11 +219,33 @@ docker build --build-arg APP=worker -t reservations-worker app/
 | `WORKER_CONCURRENCY` | `10` | worker (goroutines per instance) |
 | `WORKER_PREFETCH` | `20` | worker (RabbitMQ QoS) |
 
+## Load tests with k6
+
+Scripts live in `tests/performance/`:
+
+| File | What it does |
+|------|--------------|
+| `performance-test.js` | 10 virtual users send 1000 `POST /reservations` to each API, never repeating an email (`largeDataset`). Checks `201` on sync and `202` on async. |
+| `rate-test.js` | Applies constant rates of **100, 500 and 1000 requests/s** (30 s each) to both APIs at once, using generated emails. |
+| `mails-sync.js` / `mails-async.js` | `{ email, name }` datasets (`small`, `medium`, `large`, `edgeCase`, `invalid`) with no repeated emails across both files. |
+
+Thresholds are split per API with tags (`{api:sync}` / `{api:async}`): p95 latency, error rate and checks.
+
+```sh
+# Reset state before every run (both APIs share the database)
+curl -X POST http://api-sync.lan/admin/truncate
+
+k6 run tests/performance/performance-test.js
+k6 run tests/performance/rate-test.js
+```
+
+> `api-async` latency only measures the time to **enqueue** (`202`). The time until the data is stored shows up in the RabbitMQ queue depth.
+
 ## Pending
 
 - **Ingress for the RabbitMQ dashboard**. `api-sync` and `api-async` are already exposed through Ingress.
 - **`worker` scaling on Kubernetes** (replicas or HPA). The `Deployment` already exists.
-- **k6 load tests** against the cluster.
+- **Run and document the results** of the load tests against the cluster (the scripts already exist).
 
 ## Tests
 
